@@ -1,0 +1,12 @@
+2025-03-24 16:03:56.685 | INFO     | __main__:<module>:24 - Starting application
+2025-03-24 16:03:56.686 | DEBUG    | __main__:<module>:25 - Debug message
+2025-03-24 16:03:56.686 | WARNING  | __main__:<module>:26 - Warning message
+2025-03-24 16:03:56.686 | ERROR    | __main__:<module>:27 - Error message
+2025-03-24 16:03:56.686 | CRITICAL | __main__:<module>:28 - Critical message
+2025-03-24 16:03:56.687 | ERROR    | __main__:<module>:33 - An error occurred: Test error
+Traceback (most recent call last):
+
+> File "D:\git_code\OpenManus\deepsearch\logger.py", line 31, in <module>
+    raise ValueError("Test error")
+
+ValueError: Test error
