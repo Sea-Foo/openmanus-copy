@@ -39,6 +39,10 @@ class BaseAgent(BaseModel, ABC):
 
     @model_validator(mode="after")
     def initialize_agent(self) -> "BaseAgent":
+        if self.llm is None or not isinstance(self.llm, LLM):
+            self.llm = LLM(config_name=self.name.lower())
+        if not isinstance(self.memory, Memory):
+            self.memory = Memory()
         return self
 
     @asynccontextmanager
