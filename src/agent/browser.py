@@ -14,7 +14,8 @@ class BrowserAgent(ToolCallAgent):
     max_steps: int = 20
 
     async def get_browser_state(self) -> Optional[dict]:
-
+        if not self._is_special_tool(name):
+            return
 
     async def think(self) -> bool:
         pass
