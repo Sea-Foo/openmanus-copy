@@ -1,10 +1,13 @@
 import asyncio
-from typing import TypeVar, Generic, Optional
+from typing import Generic, Optional, TypeVar
 
-from pydantic import Field
 from browser_use import Browser as BrowserUseBrowser
-from browser_use.browser.context import BrowserContext
+from browser_use import BrowserConfig
+from browser_use.browser.context import BrowserContext, BrowserContextConfig
+from browser_use.dom.service import DomService
+from pydantic import Field
 
+from src.config import config
 from src.tool.base import BaseTool, ToolResult
 
 _BROWSER_DESCRIPTION = """
@@ -38,6 +41,7 @@ Utility:
 """
 
 Context = TypeVar("Context")
+
 
 class BrowserUseTool(BaseTool, Generic[Context]):
     name: str = "browser_use"
@@ -126,11 +130,53 @@ class BrowserUseTool(BaseTool, Generic[Context]):
 
     lock: asyncio.Lock = Field(default_factory=asyncio.Lock)
     browser: Optional[BrowserUseBrowser] = Field(default=None, exclude=True)
+    context: Optional[BrowserContext] = Field(default=None, exclude=True)
+    dom_service: Optional[DomService] = Field(default=None, exclude=True)
 
     async def _ensure_browser_initialized(self) -> BrowserContext:
         if self.browser is None:
             browser_config_kwargs = {"headless": False, "disable_security": True}
-            
+            if config.browser_config:
+                from browser_use.browser.browser import ProxySettings
+
+                if config.browser_config.proxy and config.browser_config.proxy.server:
+                    browser_config_kwargs["proxy"] = ProxySettings(
+                        server=config.browser_config.proxy.server,
+                        username=config.browser_config.proxy.username,
+                        password=config.browser_config.proxy.password,
+                    )
+
+                browser_attrs = [
+                    "headless",
+                    "disable_security",
+                    "extra_chromium_args",
+                    "chrome_instance_path",
+                    "wss_url",
+                    "cdp_url",
+                ]
+
+                for attr in browser_attrs:
+                    value = getattr(config.browser_config, attr, None)
+                    if value is not None:
+                        if not isinstance(value, list) or value:
+                            browser_config_kwargs[attr] = value
+
+            self.browser = BrowserUseBrowser(BrowserConfig(**browser_config_kwargs))
+
+        if self.context in None:
+            context_config = BrowserContextConfig()
+
+            if (
+                config.browser_config
+                and hasattr(config.browser_config, "new_context_config")
+                and config.browser_config.new_context_config
+            ):
+                context_config = config.browser_config.new_context_config
+
+            self.context = await self.browser.new_context(context_config)
+            self.dom_service = DomService(await self.context.get_current_page())
+
+        return self.context
 
     async def execute(
         self,
@@ -148,6 +194,35 @@ class BrowserUseTool(BaseTool, Generic[Context]):
     ) -> ToolResult:
         async with self.lock:
             try:
-                pass
+                context = await self._ensure_browser_initialized()
+
+                max_content_length = getattr(
+                    config.browser_config, "max_content_length", 2000
+                )
+
+                if action == "go_to_url":
+                    if not url:
+                        return ToolResult(
+                            error="URL is required for 'go_to_url' action"
+                        )
+                    page = await context.get_current_page()
+                    await page.goto(url)
+                    await page.wait_for_load_state()
+                    return ToolResult(output=f"Navigated to {url}")
+
+                elif action == "go_back":
+                    await context.go_back()
+                    return ToolResult(output="Navigated back")
+
+                elif action == "refresh":
+                    await context.refresh_page()
+                    return ToolResult(output="Refreshed current page")
+
+                elif action == "web_search":
+                    if not query:
+                        return ToolResult(
+                            error="Query is required for 'web_search' action"
+                        )
+
             except Exception as e:
                 return ToolResult(error=f"Browser action '{action}' failed: {str(e)}")
