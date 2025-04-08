@@ -60,7 +60,7 @@ class SearchSettings(BaseModel):
 
 
 class BrowserSettings(BaseModel):
-    headless: bool = Field(False, description="Whether to run browser in headless mode")
+    headless: bool = Field(True, description="Whether to run browser in headless mode")
     disable_security: bool = Field(
         True, description="Disable browser security features"
     )
@@ -177,7 +177,7 @@ class Config:
                     **{
                         k: v
                         for k, v in proxy_config.items()
-                        if k in ["server", "username", "password"]
+                        if k in ["server", "username", "password"] and v
                     }
                 )
 

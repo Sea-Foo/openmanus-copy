@@ -166,7 +166,7 @@ class BrowserUseTool(BaseTool, Generic[Context]):
 
             self.browser = BrowserUseBrowser(BrowserConfig(**browser_config_kwargs))
 
-        if self.context in None:
+        if self.context is None:
             context_config = BrowserContextConfig()
 
             if (
