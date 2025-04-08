@@ -4,11 +4,13 @@ from typing import Any, Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.config import config
 from src.logger import logger
 from src.tool.base import BaseTool, ToolResult
 from src.tool.search import GoogleSearchEngine, WebSearchEngine
+from src.tool.search.base import SearchItem
 
 
 class SearchResult(BaseModel):
@@ -43,11 +45,11 @@ class SearchResponse(ToolResult):
     results: List[SearchResult] = Field(
         default_factory=list, description="List of search results"
     )
-    metadata = Optional[SearchMetadata] = Field(
+    metadata: Optional[SearchMetadata] = Field(
         default=None, description="Metadata about the search"
     )
 
-    @model_validator(model="after")
+    @model_validator(mode="after")
     def populate_output(self) -> "SearchResponse":
         if self.error:
             return self
@@ -72,7 +74,7 @@ class SearchResponse(ToolResult):
         if self.metadata:
             result_text.extend(
                 [
-                    f"\nMetadata:",
+                    "\nMetadata:",
                     f"- Total results: {self.metadata.total_results}",
                     f"- Language: {self.metadata.language}",
                     f"- Country: {self.metadata.country}",
@@ -122,8 +124,39 @@ class WebSearch(BaseTool):
     description: str = """Search the web for real-time information about any topic.
     This tool returns comprehensive search results with relevant information, URLs, titles, and descriptions.
     If the primary search engine fails, it automatically falls back to alternative engines."""
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "(required) The search query to submit to the search engine.",
+            },
+            "num_results": {
+                "type": "integer",
+                "description": "(optional) The number of search results to return. Default is 5.",
+                "default": 5,
+            },
+            "lang": {
+                "type": "string",
+                "description": "(optional) Language code for search results (default: en).",
+                "default": "en",
+            },
+            "country": {
+                "type": "string",
+                "description": "(optional) Country code for search results (default: us).",
+                "default": "us",
+            },
+            "fetch_content": {
+                "type": "boolean",
+                "description": "(optional) Whether to fetch full content from result pages. Default is false.",
+                "default": False,
+            },
+        },
+        "required": ["query"],
+    }
 
     _search_engine: dict[str, WebSearchEngine] = {"google": GoogleSearchEngine()}
+    content_fetcher: WebContentFetcher = WebContentFetcher()
 
     async def execute(
         self,
@@ -159,12 +192,100 @@ class WebSearch(BaseTool):
         search_params = {"lang": lang, "country": country}
 
         for retry_count in range(max_retries + 1):
-            pass
+            results = await self._try_all_engines(query, num_results, search_params)
+
+            if results:
+                if fetch_content:
+                    results = await self._fetch_content_for_results(results)
+
+                return SearchResponse(
+                    status="success",
+                    query=query,
+                    results=results,
+                    metadata=SearchMetadata(
+                        total_results=len(results), language=lang, country=country
+                    ),
+                )
+
+            if retry_count < max_retries:
+                logger.warning(
+                    f"All search engines failed. Waiting {retry_delay} seconds before retry {retry_count + 1}/{max_retries}..."
+                )
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(
+                    f"All search engines failed after {max_retries} retries. Giving up."
+                )
+
+        return SearchResponse(
+            query=query,
+            error="All search engines failed to return results after multiple retries.",
+            results=[],
+        )
 
     async def _try_all_engines(
         self, query: str, num_results: int, search_params: Dict[str, Any]
     ) -> List[SearchResult]:
-        pass
+        engine_order = self._get_engine_order()
+        failed_engines = []
+
+        for engine_name in engine_order:
+            engine = self._search_engine[engine_name]
+            logger.info(f"🔎 Attempting search with {engine_name.capitalize()}...")
+            search_items = await self._perform_search_with_engine(
+                engine, query, num_results, search_params
+            )
+
+            if not search_items:
+                logger.info(f"{engine_name.capitalize()} returns nothing")
+                failed_engines.append(engine_name.capitalize())
+                continue
+
+            if failed_engines:
+                logger.info(
+                    f"Search successful with {engine_name.capitalize()} after trying: {', '.join(failed_engines)}"
+                )
+
+            return [
+                SearchResult(
+                    position=i,
+                    url=item.url,
+                    title=item.title or f"Result {i}",
+                    description=item.description or "",
+                    source=engine_name,
+                )
+                for i, item in enumerate(search_items, 1)
+            ]
+
+        if failed_engines:
+            logger.error(f"All search engines failed: {', '.join(failed_engines)}")
+        return []
+
+    async def _fetch_content_for_results(
+        self, results: List[SearchResult]
+    ) -> List[SearchResult]:
+        if not results:
+            return []
+
+        tasks = [self._fetch_single_result_content(result) for result in results]
+
+        fetched_results = await asyncio.gather(*tasks)
+
+        return [
+            (
+                result
+                if isinstance(result, SearchResult)
+                else SearchResult(**result.dict())
+            )
+            for result in fetched_results
+        ]
+
+    async def _fetch_single_result_content(self, result: SearchResult) -> SearchResult:
+        if result.url:
+            content = await self.content_fetcher.fetch_content(result.url)
+            if content:
+                result.raw_content = content
+        return result
 
     def _get_engine_order(self) -> List[str]:
         preferred = (
@@ -190,3 +311,25 @@ class WebSearch(BaseTool):
         engine_order.extend([e for e in self._search_engine if e not in engine_order])
 
         return engine_order
+
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10)
+    )
+    async def _perform_search_with_engine(
+        self,
+        engine: WebSearchEngine,
+        query: str,
+        num_results: int,
+        search_params: Dict[str, Any],
+    ) -> List[SearchItem]:
+        return await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: list(
+                engine.perform_search(
+                    query,
+                    num_results=num_results,
+                    lang=search_params.get("lang"),
+                    country=search_params.get("country"),
+                )
+            ),
+        )

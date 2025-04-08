@@ -1,8 +1,9 @@
 import sys
 from datetime import datetime
-from pathlib import Path
 
 from loguru import logger as _logger
+
+from src.config import PROJECT_ROOT
 
 
 def define_log_level(print_level="INFO", logfile_level="DEBUG", name: str = None):
@@ -10,7 +11,6 @@ def define_log_level(print_level="INFO", logfile_level="DEBUG", name: str = None
     current_date = datetime.now()
     formatted_date = current_date.strftime("%Y%m%d%H%M%S")
     log_name = f"{name}_{formatted_date}" if name else formatted_date
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
     _logger.remove()
     _logger.add(sys.stderr, level=print_level)

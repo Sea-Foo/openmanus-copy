@@ -1,43 +1,35 @@
 import asyncio
+import base64
+import json
 from typing import Generic, Optional, TypeVar
 
 from browser_use import Browser as BrowserUseBrowser
 from browser_use import BrowserConfig
 from browser_use.browser.context import BrowserContext, BrowserContextConfig
 from browser_use.dom.service import DomService
-from pydantic import Field
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
 
 from src.config import config
+from src.llm import LLM
 from src.tool.base import BaseTool, ToolResult
+from src.tool.web_search import WebSearch
 
 _BROWSER_DESCRIPTION = """
-Interact with a web browser to perform various actions such as navigation, element interaction, content extraction, and tab management. This tool provides a comprehensive set of browser automation capabilities:
+A powerful browser automation tool that allows interaction with web pages through various actions.
+* This tool provides commands for controlling a browser session, navigating web pages, and extracting information
+* It maintains state across calls, keeping the browser session alive until explicitly closed
+* Use this when you need to browse websites, fill forms, click buttons, extract content, or perform web searches
+* Each action requires specific parameters as defined in the tool's dependencies
 
-Navigation:
-- 'go_to_url': Go to a specific URL in the current tab
-- 'go_back': Go back
-- 'refresh': Refresh the current page
-- 'web_search': Search the query in the current tab, the query should be a search query like humans search in web, concrete and not vague or super long. More the single most important items.
+Key capabilities include:
+* Navigation: Go to specific URLs, go back, search the web, or refresh pages
+* Interaction: Click elements, input text, select from dropdowns, send keyboard commands
+* Scrolling: Scroll up/down by pixel amount or scroll to specific text
+* Content extraction: Extract and analyze content from web pages based on specific goals
+* Tab management: Switch between tabs, open new tabs, or close tabs
 
-Element Interaction:
-- 'click_element': Click an element by index
-- 'input_text': Input text into a form element
-- 'scroll_down'/'scroll_up': Scroll the page (with optional pixel amount)
-- 'scroll_to_text': If you dont find something which you want to interact with, scroll to it
-- 'send_keys': Send strings of special keys like Escape,Backspace, Insert, PageDown, Delete, Enter, Shortcuts such as `Control+o`, `Control+Shift+T` are supported as well. This gets used in keyboard.press.
-- 'get_dropdown_options': Get all options from a dropdown
-- 'select_dropdown_option': Select dropdown option for interactive element index by the text of the option you want to select
-
-Content Extraction:
-- 'extract_content': Extract page content to retrieve specific information from the page, e.g. all company names, a specifc description, all information about, links with companies in structured format or simply links
-
-Tab Management:
-- 'switch_tab': Switch to a specific tab
-- 'open_tab': Open a new tab with a URL
-- 'close_tab': Close the current tab
-
-Utility:
-- 'wait': Wait for a specified number of seconds
+Note: When using element indices, refer to the numbered elements shown in the current browser state.
 """
 
 Context = TypeVar("Context")
@@ -132,6 +124,17 @@ class BrowserUseTool(BaseTool, Generic[Context]):
     browser: Optional[BrowserUseBrowser] = Field(default=None, exclude=True)
     context: Optional[BrowserContext] = Field(default=None, exclude=True)
     dom_service: Optional[DomService] = Field(default=None, exclude=True)
+    web_search_tool: WebSearch = Field(default_factory=WebSearch, exclude=True)
+
+    tool_context: Optional[Context] = Field(default=None, exclude=True)
+
+    llm: Optional[LLM] = Field(default_factory=LLM)
+
+    @field_validator("parameters", mode="before")
+    def validate_parameters(cls, v: dict, info: ValidationInfo) -> dict:
+        if not v:
+            raise ValueError("Parameters cannot be empty")
+        return v
 
     async def _ensure_browser_initialized(self) -> BrowserContext:
         if self.browser is None:
@@ -224,5 +227,296 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                             error="Query is required for 'web_search' action"
                         )
 
+                    search_response = await self.web_search_tool.execute(
+                        query=query, fetch_content=True, num_results=1
+                    )
+                    first_search_result = search_response.results[0]
+                    url_to_navigate = first_search_result.url
+
+                    page = await context.get_current_page()
+                    await page.goto(url_to_navigate)
+                    await page.wait_for_load_state()
+
+                    return search_response
+
+                elif action == "click_element":
+                    if index is None:
+                        return ToolResult(
+                            error="Index is required for 'click_element' action"
+                        )
+                    element = await context.get_dom_element_by_index(index)
+                    if not element:
+                        return ToolResult(error=f"Element with index {index} not found")
+                    download_path = await context._click_element_node(element)
+                    output = f"Clicked element at index {index}"
+                    if download_path:
+                        output += f" - Downloaded file to {download_path}"
+                    return ToolResult(output=output)
+
+                elif action == "input_text":
+                    if index is None or not text:
+                        return ToolResult(
+                            error="Index and text are required for 'input_text' action"
+                        )
+                    element = await context.get_dom_element_by_index(index)
+                    if not element:
+                        return ToolResult(error=f"Element with index {index} not found")
+                    await context._input_text_element_node(element, text)
+                    return ToolResult(
+                        output=f"Input '{text}' into element at index {index}"
+                    )
+
+                elif action == "scroll_down" or action == "scroll_up":
+                    direction = 1 if action == "scroll_down" else -1
+                    amount = (
+                        scroll_amount
+                        if scroll_amount is not None
+                        else context.config.browser_window_size["height"]
+                    )
+                    await context.execute_javascript(
+                        f"window.scrollBy(0, {direction * amount});"
+                    )
+                    return ToolResult(
+                        output=f"Scrolled {'down' if direction > 0 else 'up'} by {amount} pixels"
+                    )
+
+                elif action == "scroll_to_text":
+                    if not text:
+                        return ToolResult(
+                            error="Text is required for 'scroll_to_text' action"
+                        )
+                    page = await context.get_current_page()
+                    try:
+                        locator = page.get_by_text(text, exact=False)
+                        await locator.scroll_into_view_if_needed()
+                        return ToolResult(output=f"Scrolled to text: '{text}'")
+                    except Exception as e:
+                        return ToolResult(error=f"Failed to scroll to text: {str(e)}")
+
+                elif action == "send_keys":
+                    if not keys:
+                        return ToolResult(
+                            error="Keys are required for 'send_keys' action"
+                        )
+                    page = await context.get_current_page()
+                    await page.keyboard.press(keys)
+                    return ToolResult(output=f"Sent keys: {keys}")
+
+                elif action == "get_dropdown_options":
+                    if index is None:
+                        return ToolResult(
+                            error="Index is required for 'get_dropdown_options' action"
+                        )
+                    element = await context.get_dom_element_by_index(index)
+                    if not element:
+                        return ToolResult(error=f"Element with index {index} not found")
+                    page = await context.get_current_page()
+                    options = await page.evaluate(
+                        """
+                        (xpath) => {
+                            const select = document.evaluate(xpath, document, null,
+                                XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                            if (!select) return null;
+                            return Array.from(select.options).map(opt => ({
+                                text: opt.text,
+                                value: opt.value,
+                                index: opt.index
+                            }));
+                        }
+                    """,
+                        element.xpath,
+                    )
+                    return ToolResult(output=f"Dropdown options: {options}")
+
+                elif action == "select_dropdown_option":
+                    if index is None or not text:
+                        return ToolResult(
+                            error="Index and text are required for 'select_dropdown_option' action"
+                        )
+                    element = await context.get_dom_element_by_index(index)
+                    if not element:
+                        return ToolResult(error=f"Element with index {index} not found")
+                    page = await context.get_current_page()
+                    await page.select_option(element.xpath, label=text)
+                    return ToolResult(
+                        output=f"Selected option '{text}' from dropdown at index {index}"
+                    )
+
+                elif action == "extract_content":
+                    if not goal:
+                        return ToolResult(
+                            error="Goal is required for 'extract_content' action"
+                        )
+
+                    page = await context.get_current_page()
+                    import markdownify
+
+                    content = markdownify.markdownify(await page.content())
+
+                    prompt = f"""\
+Your task is to extract the content of the page. You will be given a page and a goal, and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format.
+Extraction goal: {goal}
+
+Page content:
+{content[:max_content_length]}
+"""
+
+                    messages = [{"role": "system", "content": prompt}]
+
+                    extraction_function = {
+                        "type": "function",
+                        "function": {
+                            "name": "extract_content",
+                            "description": "Extract specific information from a webpage based on a goal",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "extracted_content": {
+                                        "type": "object",
+                                        "description": "The content extracted from the page according to the goal",
+                                        "properties": {
+                                            "text": {
+                                                "type": "string",
+                                                "description": "Text content extracted from the page",
+                                            },
+                                            "metadata": {
+                                                "type": "object",
+                                                "description": "Additional metadata about the extracted content",
+                                                "properties": {
+                                                    "source": {
+                                                        "type": "string",
+                                                        "description": "Source of the extracted content",
+                                                    }
+                                                },
+                                            },
+                                        },
+                                    }
+                                },
+                                "required": ["extracted_content"],
+                            },
+                        },
+                    }
+
+                    response = await self.llm.ask_tool(
+                        messages, tools=[extraction_function], tool_choice="required"
+                    )
+
+                    if response and response.tool_calls:
+                        args = json.loads(response.tool_calls[0].function.arguments)
+                        extracted_content = args.get("extracted_content", {})
+                        return ToolResult(
+                            output=f"Extracted from page:\n{extracted_content}\n"
+                        )
+
+                    return ToolResult(output="No content was extracted from the page.")
+
+                elif action == "switch_tab":
+                    if tab_id is None:
+                        return ToolResult(
+                            error="Tab ID is required for 'switch_tab' action"
+                        )
+                    await context.switch_to_tab(tab_id)
+                    page = await context.get_current_page()
+                    await page.wait_for_load_state()
+                    return ToolResult(output=f"Switched to tab {tab_id}")
+
+                elif action == "open_tab":
+                    if not url:
+                        return ToolResult(error="URL is required for 'open_tab' action")
+                    await context.create_new_tab(url)
+                    return ToolResult(output=f"Opened new tab with {url}")
+
+                elif action == "close_tab":
+                    await context.close_current_tab()
+                    return ToolResult(output="Closed current tab")
+
+                elif action == "wait":
+                    seconds_to_wait = seconds if seconds is not None else 3
+                    await asyncio.sleep(seconds_to_wait)
+                    return ToolResult(output=f"Waited for {seconds_to_wait} seconds")
+
+                else:
+                    return ToolResult(error=f"Unknown action: {action}")
+
             except Exception as e:
                 return ToolResult(error=f"Browser action '{action}' failed: {str(e)}")
+
+    async def get_current_state(
+        self, context: Optional[BrowserContext] = None
+    ) -> ToolResult:
+        try:
+            ctx = context or self.context
+            if not ctx:
+                return ToolResult(error="Browser context not initialized")
+
+            state = await ctx.get_state()
+
+            viewport_height = 0
+            if hasattr(state, "viewport_info") and state.viewport_info:
+                viewport_height = state.viewport_info.height
+            elif hasattr(ctx, "config") and hasattr(ctx.config, "browser_window_size"):
+                viewport_height = ctx.config.browser_window_size.get("height", 0)
+
+            page = await ctx.get_current_page()
+
+            await page.bring_to_front()
+            await page.wait_for_load_state()
+
+            screenshot = await page.screenshot(
+                full_page=True, animations="disabled", type="jpeg", quality=100
+            )
+
+            screenshot = base64.b64encode(screenshot).decode("utf-8")
+
+            state_info = {
+                "url": state.url,
+                "title": state.title,
+                "tabs": [tab.model_dump() for tab in state.tabs],
+                "help": "[0], [1], [2], etc., represent clickable indices corresponding to the elements listed. Clicking on these indices will navigate to or interact with the respective content behind them.",
+                "interactive_elements": (
+                    state.element_tree.clickable_elements_to_string()
+                    if state.element_tree
+                    else ""
+                ),
+                "scroll_info": {
+                    "pixels_above": getattr(state, "pixels_above", 0),
+                    "pixels_below": getattr(state, "pixels_below", 0),
+                    "total_height": getattr(state, "pixels_above", 0)
+                    + getattr(state, "pixels_below", 0)
+                    + viewport_height,
+                },
+                "viewport_height": viewport_height,
+            }
+
+            return ToolResult(
+                output=json.dumps(state_info, indent=4, ensure_ascii=False),
+                base64_image=screenshot,
+            )
+        except Exception as e:
+            return ToolResult(error=f"Failed to get browser state: {str(e)}")
+
+    async def cleanup(self):
+        async with self.lock:
+            if self.context is not None:
+                await self.context.close()
+                self.context = None
+                self.dom_service = None
+            if self.browser is not None:
+                await self.browser.close()
+                self.browser = None
+
+    def __del__(self):
+        """Ensure cleanup when object is destroyed."""
+        if self.browser is not None or self.context is not None:
+            try:
+                asyncio.run(self.cleanup())
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self.cleanup())
+                loop.close()
+
+    @classmethod
+    def create_with_context(cls, context: Context) -> "BrowserUseTool[Context]":
+        tool = cls()
+        tool.tool_context = context
+        return tool

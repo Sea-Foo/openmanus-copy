@@ -1,6 +1,6 @@
 [llm]
-model = ""
-base_url = ""
+model = "ep-20250408153517-z8kls"
+base_url = "https://ark.cn-beijing.volces.com/api/v3"
 api_key = ""
-max_tokens = 2048
+max_tokens = 4096
 temperature = 0.0

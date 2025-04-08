@@ -37,6 +37,7 @@ MULTIMODAL_MODELS = [
     "claude-3-opus-20240229",
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
+    "ep-20250408153517-z8kls",
 ]
 
 

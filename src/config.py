@@ -1,9 +1,9 @@
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 import tomllib
-from pydantic import BaseModel, Dict, Field, List
+from pydantic import BaseModel, Field
 
 
 def get_project_root() -> Path:
@@ -86,7 +86,7 @@ class BrowserSettings(BaseModel):
 
 class SandboxSettings(BaseModel):
 
-    use_sandbox = Field(False, description="Whether to use the sandbox")
+    use_sandbox: bool = Field(False, description="Whether to use the sandbox")
     image: str = Field("python:3.12-slim", description="Base image")
     work_dir: str = Field("/workspace", description="Container working directory")
     memory_limit: str = Field("512m", description="Memory limit")
@@ -130,11 +130,13 @@ class Config:
             with self._lock:
                 if not self._initialized:
                     self._config = None
+                    self._load_initial_config()
+                    self._initialized = True
 
     @staticmethod
     def _get_config_path() -> Path:
         root = PROJECT_ROOT
-        config_path = root / "config" / "config.toml"
+        config_path = root / "config.toml"
         if config_path.exists():
             return config_path
         example_path = root / "config" / "config.example.toml"

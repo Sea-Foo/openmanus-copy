@@ -2,6 +2,7 @@ import json
 from typing import Any, List, Optional, Union
 
 from pydantic import Field
+
 from src.agent.react import ReActAgent
 from src.exceptions import TokenLimitExceeded
 from src.logger import logger
@@ -40,13 +41,11 @@ class ToolCallAgent(ReActAgent):
         try:
             response = await self.llm.ask_tool(
                 messages=self.messages,
-                system_msgs={
-                    (
-                        [Message.system_message(self.system_prompt)]
-                        if self.system_prompt
-                        else None
-                    )
-                },
+                system_msgs=(
+                    [Message.system_message(self.system_prompt)]
+                    if self.system_prompt
+                    else None
+                ),
                 tools=self.available_tools.to_params(),
                 tool_choice=self.tool_choices,
             )
