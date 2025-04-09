@@ -1,4 +1,5 @@
 import json
+import atexit
 from inspect import Parameter, Signature
 from typing import Any, Dict, Optional
 
@@ -42,6 +43,20 @@ class MCPServer:
         tool_method.__name__ = tool_name
         tool_method.__doc__ = self._build_docstring(tool_function)
         tool_method.__signature__ = self._build_signature(tool_function)
+
+        param_props = tool_function.get("parameters", {}).get("properties", {})
+        required_params = tool_function.get("parameters", {}).get("required", [])
+        tool_method._parameter_schema = {
+            param_name: {
+                "description": param_details.get("description", ""),
+                "type": param_details.get("type", "any"),
+                "required": param_name in required_params,
+            }
+            for param_name, param_details in param_props.items()
+        }
+
+        self.server.tool()(tool_method)
+        logger.info(f"Registered tool: {tool_name}")
 
     def _build_docstring(self, tool_function: dict) -> str:
         description = tool_function.get("description", "")
@@ -101,40 +116,37 @@ class MCPServer:
 
         return Signature(parameters=parameters)
 
-    def _build_signature(self, tool_function: dict) -> Signature:
-        """Build a function signature from tool function metadata."""
-        param_props = tool_function.get("parameters", {}).get("properties", {})
-        required_params = tool_function.get("parameters", {}).get("required", [])
+    async def cleanup(self) -> None:
+        logger.info("Cleaning up resources")
+        if "browser" in self.tools and hasattr(self.tools["browser"], "cleanup"):
+            await self.tools["browser"].cleanup()
 
-        parameters = []
+    def register_all_tools(self) -> None:
+        for tool in self.tools.values():
+            self.register_tool(tool)
 
-        # Follow original type mapping
-        for param_name, param_details in param_props.items():
-            param_type = param_details.get("type", "")
-            default = Parameter.empty if param_name in required_params else None
+    def run(self, transport: str = "stdio") -> None:
+        self.register_all_tools()
 
-            # Map JSON Schema types to Python types (same as original)
-            annotation = Any
-            if param_type == "string":
-                annotation = str
-            elif param_type == "integer":
-                annotation = int
-            elif param_type == "number":
-                annotation = float
-            elif param_type == "boolean":
-                annotation = bool
-            elif param_type == "object":
-                annotation = dict
-            elif param_type == "array":
-                annotation = list
+        atexit.register(lambda: asyncio.run(self.cleanup()))
 
-            # Create parameter with same structure as original
-            param = Parameter(
-                name=param_name,
-                kind=Parameter.KEYWORD_ONLY,
-                default=default,
-                annotation=annotation,
-            )
-            parameters.append(param)
+        logger.info(f"Starting OpenManus server ({transport} mode)")
+        self.server.run(transport=transport)
 
-        return Signature(parameters=parameters)
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="OpenManus MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio"],
+        default="stdio",
+        help="Communication method: stdio or http (default: stdio)",
+    )
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    # Create and run server (maintaining original flow)
+    server = MCPServer()
+    server.run(transport=args.transport)
