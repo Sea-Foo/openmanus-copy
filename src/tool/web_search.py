@@ -9,7 +9,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.config import config
 from src.logger import logger
 from src.tool.base import BaseTool, ToolResult
-from src.tool.search import GoogleSearchEngine, WebSearchEngine, BaiduSearchEngine
+from src.tool.search import BaiduSearchEngine, GoogleSearchEngine, WebSearchEngine
 from src.tool.search.base import SearchItem
 
 
@@ -155,7 +155,10 @@ class WebSearch(BaseTool):
         "required": ["query"],
     }
 
-    _search_engine: dict[str, WebSearchEngine] = {"google": GoogleSearchEngine(), "baidu": BaiduSearchEngine()}
+    _search_engine: dict[str, WebSearchEngine] = {
+        "google": GoogleSearchEngine(),
+        "baidu": BaiduSearchEngine(),
+    }
     content_fetcher: WebContentFetcher = WebContentFetcher()
 
     async def execute(
@@ -178,15 +181,15 @@ class WebSearch(BaseTool):
         )
         if lang is None:
             lang = (
-                getattr(config.search_config, "lang", "en")
+                getattr(config.search_config, "lang", "zh")
                 if config.search_config
-                else "en"
+                else "zh"
             )
         if country is None:
             country = (
-                getattr(config.search_config, "country", "us")
+                getattr(config.search_config, "country", "cn")
                 if config.search_config
-                else "us"
+                else "cn"
             )
 
         search_params = {"lang": lang, "country": country}

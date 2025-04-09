@@ -12,6 +12,7 @@ from pydantic_core.core_schema import ValidationInfo
 
 from src.config import config
 from src.llm import LLM
+from src.schema import Message
 from src.tool.base import BaseTool, ToolResult
 from src.tool.web_search import WebSearch
 
@@ -361,7 +362,8 @@ Page content:
 {content[:max_content_length]}
 """
 
-                    messages = [{"role": "system", "content": prompt}]
+                    # messages = [{"role": "system", "content": prompt}]
+                    messages = [Message.user_message(content=prompt)]
 
                     extraction_function = {
                         "type": "function",
@@ -379,16 +381,16 @@ Page content:
                                                 "type": "string",
                                                 "description": "Text content extracted from the page",
                                             },
-                                            "metadata": {
-                                                "type": "object",
-                                                "description": "Additional metadata about the extracted content",
-                                                "properties": {
-                                                    "source": {
-                                                        "type": "string",
-                                                        "description": "Source of the extracted content",
-                                                    }
-                                                },
-                                            },
+                                            # "metadata": {
+                                            #     "type": "object",
+                                            #     "description": "Additional metadata about the extracted content",
+                                            #     "properties": {
+                                            #         "source": {
+                                            #             "type": "string",
+                                            #             "description": "Source of the extracted content",
+                                            #         }
+                                            #     },
+                                            # },
                                         },
                                     }
                                 },
@@ -402,11 +404,16 @@ Page content:
                     )
 
                     if response and response.tool_calls:
-                        args = json.loads(response.tool_calls[0].function.arguments)
-                        extracted_content = args.get("extracted_content", {})
-                        return ToolResult(
-                            output=f"Extracted from page:\n{extracted_content}\n"
-                        )
+                        try:
+                            args = json.loads(response.tool_calls[0].function.arguments)
+                            extracted_content = args.get("extracted_content", {})
+                            return ToolResult(
+                                output=f"Extracted from page:\n{extracted_content}\n"
+                            )
+                        except Exception as e:
+                            return ToolResult(
+                                output=f"Extracted from page:\n{response.tool_calls[0].function.arguments}\n"
+                            )
 
                     return ToolResult(output="No content was extracted from the page.")
 

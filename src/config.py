@@ -50,17 +50,17 @@ class SearchSettings(BaseModel):
         description="Maximum number of times to retry all engines when all fail",
     )
     lang: str = Field(
-        default="en",
+        default="zh",
         description="Language code for search results (e.g., en, zh, fr)",
     )
     country: str = Field(
-        default="us",
+        default="cn",
         description="Country code for search results (e.g., us, cn, uk)",
     )
 
 
 class BrowserSettings(BaseModel):
-    headless: bool = Field(True, description="Whether to run browser in headless mode")
+    headless: bool = Field(False, description="Whether to run browser in headless mode")
     disable_security: bool = Field(
         True, description="Disable browser security features"
     )
@@ -97,6 +97,13 @@ class SandboxSettings(BaseModel):
     )
 
 
+class MCPSettings(BaseModel):
+
+    server_reference: str = Field(
+        "src.mcp.server", description="Module reference for the MCP server"
+    )
+
+
 class AppConfig(BaseModel):
     llm: Dict[str, LLMSettings]
     sandbox: Optional[SandboxSettings] = Field(
@@ -108,6 +115,7 @@ class AppConfig(BaseModel):
     search_config: Optional[SearchSettings] = Field(
         None, description="Search configuration"
     )
+    mcp_config: Optional[MCPSettings] = Field(None, description="MCP configuration")
 
     class Config:
         arbitrary_types_allowed = True
@@ -203,6 +211,13 @@ class Config:
         else:
             sandbox_settings = SandboxSettings()
 
+        mcp_config = raw_config.get("mcp", {})
+        mcp_settings = None
+        if mcp_config:
+            mcp_settings = MCPSettings(**mcp_config)
+        else:
+            mcp_settings = MCPSettings()
+
         config_dict = {
             "llm": {
                 "default": default_settings,
@@ -214,6 +229,7 @@ class Config:
             "sandbox": sandbox_settings,
             "browser_config": browser_settings,
             "search_config": search_settings,
+            "mcp_config": mcp_settings,
         }
 
         self._config = AppConfig(**config_dict)
@@ -233,6 +249,11 @@ class Config:
     @property
     def search_config(self) -> Optional[SearchSettings]:
         return self._config.search_config
+
+    @property
+    def mcp_config(self) -> MCPSettings:
+        """Get the MCP configuration"""
+        return self._config.mcp_config
 
     @property
     def workspace_root(self) -> Path:

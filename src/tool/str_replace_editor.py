@@ -93,7 +93,7 @@ class StrReplaceEditor(BaseTool):
     def _get_operator(self) -> FileOperator:
         return (
             self._sandbox_operator
-            if config.sandbox.use_sanbox
+            if config.sandbox.use_sandbox
             else self._local_operator
         )
 
